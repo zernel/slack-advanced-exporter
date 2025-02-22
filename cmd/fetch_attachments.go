@@ -10,6 +10,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -17,6 +19,7 @@ import (
 
 var (
 	attachmentsApiToken string
+	localAttachmentsDir string
 )
 
 var fetchAttachmentsCmd = &cobra.Command{
@@ -27,6 +30,7 @@ var fetchAttachmentsCmd = &cobra.Command{
 
 func init() {
 	fetchAttachmentsCmd.PersistentFlags().StringVar(&attachmentsApiToken, "api-token", "", "Slack API token. Can be obtained here: https://api.slack.com/docs/oauth-test-tokens")
+	fetchAttachmentsCmd.PersistentFlags().StringVar(&localAttachmentsDir, "attachments-dir", "", "Local directory containing downloaded attachments")
 }
 
 func fetchAttachments(cmd *cobra.Command, args []string) error {
@@ -130,10 +134,37 @@ func processChannelFile(w *zip.Writer, file *zip.File, inBuf []byte, token strin
 
 		// Loop through all the files.
 		for _, file := range post.Files {
-			// Check there's an Id, Name and either UrlPrivateDownload or UrlPrivate property.
-			if len(file.Id) < 1 || len(file.Name) < 1 || !(len(file.UrlPrivate) > 0 || len(file.UrlPrivateDownload) > 0) {
-				log.Print("++++++ file_share post has missing properties on its File object: " + post.Ts + "\n")
-				continue
+			log.Print("\n")
+			log.Print("++++++ Processing file: " + file.Id + "\n")
+			localFilePath := ""
+			if len(file.Id) > 0 && localAttachmentsDir != "" {
+				var err error
+				localFilePath, err = findLocalAttachment(file.Id, localAttachmentsDir)
+				if err == nil {
+					if len(file.Name) < 1 {
+						fileName := filepath.Base(localFilePath)
+						prefix := file.Id + "-"
+						if strings.HasPrefix(fileName, prefix) {
+							fileName = strings.TrimPrefix(fileName, prefix)
+						}
+						// Replace spaces and special characters with underscores, but keep the file extension.
+						ext := filepath.Ext(fileName)
+						fileNameWithoutExt := strings.TrimSuffix(fileName, ext)
+						reg := regexp.MustCompile(`[[:space:][:punct:]]`)
+						fileNameWithoutExt = reg.ReplaceAllString(fileNameWithoutExt, "_")
+						file.Name = fileNameWithoutExt + ext
+					}
+					log.Print("++++++ Find local attachments: " + file.Id)
+				}
+			}
+			log.Print("++++++ Local file path: " + localFilePath)
+
+			if localFilePath == "" {
+				// Check there's an Id, Name and either UrlPrivateDownload or UrlPrivate property.
+				if len(file.Id) < 1 || len(file.Name) < 1 || !(len(file.UrlPrivate) > 0 || len(file.UrlPrivateDownload) > 0) {
+					log.Print("++++++ file_share post has missing properties on its File object: " + post.Ts + "\n")
+					continue
+				}
 			}
 
 			// Figure out the download URL to use.
@@ -166,8 +197,23 @@ func processChannelFile(w *zip.Writer, file *zip.File, inBuf []byte, token strin
 				req.Header.Add("Authorization", "Bearer "+token)
 			}
 			response, err := client.Do(req)
-			if err != nil {
-				log.Print("++++++ Failed to download the file: " + downloadUrl)
+			if err != nil || response.StatusCode != http.StatusOK {
+				// 先尝试本地文件
+				if localFilePath, err := findLocalAttachment(file.Id, localAttachmentsDir); err == nil {
+					localFile, err := os.Open(localFilePath)
+					if err != nil {
+						log.Print("++++++ Failed to open the local file: " + localFilePath + "\n\n" + err.Error() + "\n")
+						continue
+					}
+					defer localFile.Close()
+					_, err = io.Copy(outFile, localFile)
+					if err == nil {
+						fmt.Printf("Use local file: %s (%s)\n", file.Id, localFilePath)
+						continue
+					}
+				}
+
+				log.Print("++++++ Download failed and no local attachment.: " + downloadUrl)
 				continue
 			}
 			defer response.Body.Close()
@@ -184,4 +230,28 @@ func processChannelFile(w *zip.Writer, file *zip.File, inBuf []byte, token strin
 	}
 
 	return nil
+}
+
+func findLocalAttachment(fileID, dir string) (string, error) {
+	if dir == "" {
+		return "", errors.New("Local attachment directory not configured.")
+	}
+
+	files, err := ioutil.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+
+	for _, f := range files {
+		if strings.HasPrefix(f.Name(), fileID) {
+			// file, err := os.Open(filepath.Join(dir, f.Name()))
+			// if err != nil {
+			// 	return nil, "", err
+			// }
+			// return file, f.Name(), nil
+			filePath := filepath.Join(dir, f.Name())
+			return filePath, nil
+		}
+	}
+	return "", errors.New("No matching local attachment found.")
 }
