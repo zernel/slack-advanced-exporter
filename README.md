@@ -36,13 +36,20 @@ You'll need to obtain an API token [here](https://api.slack.com/docs/oauth-test-
 
 ### Add all the File Attachments to your export.
 
-To fetch all the file attachments referenced in your Slack team export andd add them to the archive,
+To fetch all the file attachments referenced in your Slack team export and add them to the archive,
 use this command:
 
     ./slack-advanced-exporter --input-archive your-slack-team-export.zip --output-archive export-with-attachments.zip fetch-attachments
 
 You may need an API token to access some attachments. You can add `--api-token xoxp-123...`
 to this command if so, in the same way as for `fetch-emails`.
+
+If some attachments are no longer available on Slack servers but you have previously downloaded copies,
+you can specify a local directory containing these attachments:
+
+    ./slack-advanced-exporter --input-archive your-slack-team-export.zip --output-archive export-with-attachments.zip fetch-attachments --attachments-dir /path/to/local/attachments
+
+The tool will attempt to find matching files in the specified directory when downloads from Slack fail.
 
 Problems
 --------
